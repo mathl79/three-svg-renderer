@@ -57,8 +57,8 @@ export function getSVGText(
 }
 
 export function getSVGPath(
-    contour: PointLike[], 
-    holes: PointLike[][], 
+    contour: PointLike[],
+    holes: PointLike[][],
     closed: boolean,
     strokeStyle?: StrokeData,
     fillStyle?: FillData
@@ -69,7 +69,9 @@ export function getSVGPath(
     cmds = cmds.concat(getSVGPathCommands(hole, closed));
   }
 
-  path.plot(new SVGPathArray(cmds));
+  if (cmds.length > 0) {
+    path.plot(new SVGPathArray(cmds));
+  }
   if (strokeStyle) {
     path.stroke(strokeStyle);
   } else {
@@ -85,13 +87,11 @@ export function getSVGPath(
     
 function getSVGPathCommands(points: PointLike[], closed = true): SVGPathCommand[] {
   const cmds = new Array<SVGPathCommand>();
-  let p;
-  if (points.length > 0) {
-    p = points[0];
-    cmds.push(['M', round(p.x), round(p.y)])
-    for (let i=1; i<points.length; i++) {
-      p = points[i];
-      cmds.push(['L', round(p.x), round(p.y)]);
+  const finite = points.filter(p => isFinite(p.x) && isFinite(p.y));
+  if (finite.length > 0) {
+    cmds.push(['M', round(finite[0].x), round(finite[0].y)]);
+    for (let i = 1; i < finite.length; i++) {
+      cmds.push(['L', round(finite[i].x), round(finite[i].y)]);
     }
     if (closed) {
       cmds.push(['Z']);

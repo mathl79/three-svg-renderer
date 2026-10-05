@@ -17,3 +17,4 @@ export { FillStyle, FillPass, FillPassOptions } from "./FillPass";
 export { SingularityPointPass, SingularityPointPassOptions } from "./SingularityPointPass";
 export { TexturePass } from "./TexturePass";
 export { StrokeStyle, VisibleChainPass, HiddenChainPass, ChainPassOptions, ChainPass} from "./ChainPass";
+export { BlendTangentChainPass, BlendTangentChainPassOptions, BlendVisibilityFilter } from "./BlendTangentChainPass";
