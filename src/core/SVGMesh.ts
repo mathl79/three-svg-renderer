@@ -87,12 +87,16 @@ export class SVGMesh {
   }
 
   updateBVH(updateMorphGeometry = true) {
-    updateMorphGeometry && this.updateMorphGeometry();
+    if (updateMorphGeometry) {
+      this.updateMorphGeometry();
+    }
     this.bvh.refit();
   }
 
   updateHES(updateMorphGeometry = true) {
-    updateMorphGeometry && this.updateMorphGeometry();
+    if (updateMorphGeometry) {
+      this.updateMorphGeometry();
+    }
     this.hes.setFromGeometry(this.threeMesh.geometry);
   }
 
@@ -132,4 +136,3 @@ function colorForMaterial(material: Material) {
   const colorMaterial = material as ColorMaterial;
   return colorMaterial.color;
 }
-

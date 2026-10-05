@@ -14,11 +14,12 @@
 
 import { Vector3 } from 'three';
 import { Vertex } from 'three-mesh-halfedge';
+import { expect } from '@jest/globals';
 
 declare global {
   namespace jest {
-    interface Matchers<R> {
-      toBeVertex(expected: Vertex): CustomMatcherResult;
+    interface Matchers<R, T = {}> {
+      toBeVertex(expected: T extends Vertex ? T : Vertex): R;
     }
   }
 }

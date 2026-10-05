@@ -18,7 +18,7 @@ import { Vector2 } from "three";
 import { Viewmap } from "../Viewmap";
 import { splitViewEdge2d } from "./splitEdge";
 import { ViewVertexSingularity } from "../ViewVertex";
-import { hashVector2 } from "../../../utils";
+import { cameraDepth, hashVector2 } from "../../../utils";
 
 const _vec = new Vector2();
 
@@ -109,8 +109,8 @@ export function find2dSingularities(viewmap: Viewmap) {
       // If equal, both vertices get a singularity
       // See https://hal.inria.fr/hal-02189483, image intersections of type T-cusp
 
-      const d1 = v1.pos3d.distanceTo(viewmap.camera.position);
-      const d2 = v2.pos3d.distanceTo(viewmap.camera.position);
+      const d1 = cameraDepth(v1.pos3d, viewmap.camera);
+      const d2 = cameraDepth(v2.pos3d, viewmap.camera);
       
       if (d1 > d2 + 1e-10) {
         v1.singularity = ViewVertexSingularity.ImageIntersection;

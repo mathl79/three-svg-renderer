@@ -12,7 +12,7 @@
  * Licence: Licence.md
  */
 
-import { PerspectiveCamera } from "three";
+import { Camera, OrthographicCamera, Vector3 } from "three";
 import { Vertex } from "three-mesh-halfedge";
 import { sameSide } from "../../../utils";
 import { ViewEdgeNature } from "../ViewEdge";
@@ -37,7 +37,7 @@ export function find3dSingularities(viewmap: Viewmap) {
  * @returns 
  */
 export function singularityForPoint(
-    viewVertex: ViewVertex, camera: PerspectiveCamera) {
+    viewVertex: ViewVertex, camera: Camera) {
 
   const natures = new Set<ViewEdgeNature>();
 
@@ -117,7 +117,11 @@ export function *listBoundaryHalfedgesInOut(vertex: Vertex) {
  * @param camera 
  * @returns 
  */
-export function isAnyFaceOverlappingBoundary(viewVertex: ViewVertex, camera: PerspectiveCamera) {
+export function isAnyFaceOverlappingBoundary(viewVertex: ViewVertex, camera: Camera) {
+
+  const orthographicDirection = camera instanceof OrthographicCamera
+    ? camera.getWorldDirection(new Vector3())
+    : null;
 
   for (const vertex of viewVertex.vertices) {
 
@@ -137,7 +141,9 @@ export function isAnyFaceOverlappingBoundary(viewVertex: ViewVertex, camera: Per
         // Halfedge is arriving to vertex
         other = halfedge.vertex;
       }
-      const d = other.position.distanceTo(camera.position);
+      const d = orthographicDirection
+        ? other.position.dot(orthographicDirection)
+        : other.position.distanceTo(camera.position);
       if (d > distance) {
         distance = d;
         farthestHalfedge = halfedge;
@@ -149,9 +155,11 @@ export function isAnyFaceOverlappingBoundary(viewVertex: ViewVertex, camera: Per
 
       // Iterate on each connected faces to vertex and check if it overlaps
       // the farthest halfedge
-      const c = camera.position;
       const p = vertex.position;
       const e = otherVertex.position;
+      const c = orthographicDirection
+        ? p.clone().addScaledVector(orthographicDirection, -1)
+        : camera.position;
 
       const boundaryFace = farthestHalfedge.twin.face;
 

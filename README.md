@@ -71,6 +71,10 @@ renderer.generateSVG(meshes, camera, {w: 1000, h:1000})
   });
 ```
 
+`generateSVG` also accepts `OrthographicCamera` instances. Set the camera's
+left, right, top, and bottom planes to control the orthographic framing; the
+renderer preserves that frustum's aspect ratio in the output.
+
 ## References
 
 #### Papers
@@ -83,4 +87,3 @@ renderer.generateSVG(meshes, camera, {w: 1000, h:1000})
 #### Objects
 
 - Thanks to Blender for the character model Vincent [[link]](https://studio.blender.org/characters/5718a967c379cf04929a4247/v1/)
-

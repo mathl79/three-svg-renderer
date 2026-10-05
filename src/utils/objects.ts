@@ -12,13 +12,22 @@
  * Licence: Licence.md
  */
 
-export function mergeOptions (target: any, source: any) {
+export function mergeOptions<T extends object>(target: T, source: Partial<T>): T {
   // Iterate through `source` properties and if an `Object` set property to merge of `target` and `source` properties
-  for (const key of Object.keys(source)) {
-    if (source[key] instanceof Object) Object.assign(source[key], mergeOptions(target[key], source[key]))
+  const targetValues = target as Record<string, unknown>;
+  const sourceValues = source as Record<string, unknown>;
+  for (const key of Object.keys(sourceValues)) {
+    const sourceValue = sourceValues[key];
+    const targetValue = targetValues[key];
+    if (isObject(targetValue) && isObject(sourceValue)) {
+      Object.assign(sourceValue, mergeOptions(targetValue, sourceValue));
+    }
   }
 
   // Join `target` and modified `source`
-  Object.assign(target || {}, source)
-  return target
+  return Object.assign(target, source);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
 }

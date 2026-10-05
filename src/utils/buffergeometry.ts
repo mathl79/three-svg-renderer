@@ -5,7 +5,7 @@ import {computeMorphedAttributes} from 'three/examples/jsm/utils/BufferGeometryU
 /**
  * Types definitions are not up to date
  */
-declare module 'three/examples/jsm/utils/BufferGeometryUtils' {
+declare module 'three/examples/jsm/utils/BufferGeometryUtils.js' {
   export function computeMorphedAttributes(object: Mesh): {
     positionAttribute: BufferAttribute,
     normalAttribute: BufferAttribute,

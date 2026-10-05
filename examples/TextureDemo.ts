@@ -14,7 +14,7 @@
 
 import { GUI } from 'dat.gui';
 import * as THREE from 'three';
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { SVGRenderer, VisibleChainPass, TexturePass, SVGRenderInfo, 
   SVGMesh, 
   FillPass} from '../src/index';
@@ -293,7 +293,7 @@ function loadTexture(mesh: CMesh, textureFilename: string) {
                   mesh.material.map = texture;
                   // Threejs transforms SVG files as PNGs in the scene and we need the
                   // raw data to send it to the SVG renderer, so we save it.
-                  texture.sourceFile = dataUrl;
+                  texture.userData.sourceFile = dataUrl;
                   texture.name = textureFilename;
                   mesh.material.needsUpdate = true;
                   resolve();
@@ -326,10 +326,13 @@ const debouncedGenerateSVG = debounce(500, () => {
   for (const mesh of meshes) {
     const svgMesh = new SVGMesh(mesh);
     if (mesh.material.map) {
-      svgMesh.addTexture({
-        name: mesh.material.map.name,
-        url: mesh.material.map.sourceFile
-      });
+      const sourceFile = mesh.material.map.userData.sourceFile;
+      if (typeof sourceFile === "string") {
+        svgMesh.addTexture({
+          name: mesh.material.map.name,
+          url: sourceFile
+        });
+      }
     }
     svgMeshes.push(svgMesh);
   }
@@ -352,5 +355,3 @@ autoRenderChanged();
 Promise.all(loadedTexturePromises).then(() => {
   updateTransparentTextures();
 })
-
-

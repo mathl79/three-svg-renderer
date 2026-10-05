@@ -1,6 +1,6 @@
 
 
-import {Vector2, Vector3, PerspectiveCamera, Line3} from 'three';
+import {Camera, OrthographicCamera, Vector2, Vector3, Line3} from 'three';
 
 const _u = new Vector3();
 
@@ -19,7 +19,7 @@ export interface RectLike extends PointLike, SizeLike {}
 export function projectPointNDC(
     point: Vector3,
     target: Vector2,
-    camera: PerspectiveCamera
+    camera: Camera
 ): Vector2 {
 
   _u.copy(point).project(camera);
@@ -29,12 +29,23 @@ export function projectPointNDC(
 export function projectPoint(
     point: Vector3,
     target: Vector2,
-    camera: PerspectiveCamera,
+    camera: Camera,
     renderSize: SizeLike): Vector2 {
 
   projectPointNDC(point, target, camera);
   NDCPointToImage(target, target, renderSize);
   return target;
+}
+
+/**
+ * Returns camera-space depth, increasing away from the camera.
+ */
+export function cameraDepth(point: Vector3, camera: Camera) {
+  if (camera instanceof OrthographicCamera) {
+    camera.getWorldDirection(_u);
+    return point.dot(_u);
+  }
+  return point.distanceTo(camera.position);
 }
 
 /**

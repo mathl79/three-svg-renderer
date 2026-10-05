@@ -3,8 +3,8 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import * as THREE from 'three';
 import { FillPass, HiddenChainPass, SingularityPointPass, SVGMesh, 
   SVGRenderer, VisibleChainPass, SVGRenderInfo} from '../src/index';
-import { BoxBufferGeometry, BufferGeometry, Mesh, MeshBasicMaterial, MeshPhongMaterial, MeshStandardMaterial, SphereBufferGeometry, Vector3 } from 'three';
-import {GLTFLoader} from 'three/examples/jsm/loaders/GLTFLoader';
+import { BoxGeometry, BufferGeometry, Camera, Mesh, MeshBasicMaterial, MeshPhongMaterial, MeshStandardMaterial, OrthographicCamera, PerspectiveCamera, SphereGeometry, Vector3 } from 'three';
+import {GLTFLoader} from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {debounce} from 'throttle-debounce';
 import { Svg } from '@svgdotjs/svg.js';
 
@@ -42,6 +42,7 @@ svgRenderer.addPass(singularityPass);
 const params = {
   autoRender: false,
   scene: "pig",
+  cameraProjection: "perspective",
   ignoreVisibility: false,
   colorChainsByNature: false,
   prettify: false,
@@ -75,10 +76,7 @@ const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
 scene.add(ambientLight);
 
 // Init camera
-const camera = new THREE.PerspectiveCamera(75, W / H, 0.1, 50);
-camera.position.set(3, 2, 4);
-camera.far = 100;
-camera.updateProjectionMatrix();
+let camera: Camera = createPerspectiveCamera();
 
 // Init camera light
 const camLight = new THREE.PointLight(0xffffff, 0.5);
@@ -92,6 +90,7 @@ scene.add(camera);
 
 const gui = new GUI();
 gui.add(params, 'scene', possibleObjects).onChange(setupScene);
+gui.add(params, 'cameraProjection', ["perspective", "orthographic"]).onChange(setCameraProjection);
 
 /**
  * Chains Pass
@@ -157,19 +156,14 @@ gui.open();
 //                          Setup scene controls
 //##############################################################################
 
-const orbitControls = new OrbitControls(camera, renderer.domElement);
-
-orbitControls.addEventListener('change', function () {
-  render();
-});
+let orbitControls = createOrbitControls(camera);
 
 window.addEventListener('resize', function () {
 
   W = sceneDomElement.clientWidth;
   H = sceneDomElement.clientHeight;
 
-  camera.aspect = W/H;
-  camera.updateProjectionMatrix();
+  updateCameraProjection();
 
   renderer.setSize(W, H);
   render();
@@ -184,6 +178,59 @@ function autoRenderChanged() {
     orbitControls.removeEventListener('end', generateSVG);
   }
 
+}
+
+function createPerspectiveCamera() {
+  const nextCamera = new PerspectiveCamera(75, W / H, 0.1, 100);
+  nextCamera.position.set(3, 2, 4);
+  nextCamera.updateProjectionMatrix();
+  return nextCamera;
+}
+
+function createOrbitControls(targetCamera: Camera) {
+  const controls = new OrbitControls(targetCamera, renderer.domElement);
+  controls.addEventListener('change', render);
+  return controls;
+}
+
+function setCameraProjection() {
+  const position = camera.position.clone();
+  const target = orbitControls.target.clone();
+  orbitControls.dispose();
+  scene.remove(camera);
+  camera.remove(camLight);
+
+  if (params.cameraProjection === "orthographic") {
+    const halfHeight = 2.5;
+    camera = new OrthographicCamera(
+      -halfHeight * W / H, halfHeight * W / H,
+      halfHeight, -halfHeight, 0.1, 100
+    );
+  } else {
+    camera = createPerspectiveCamera();
+  }
+
+  camera.position.copy(position);
+  camera.lookAt(target);
+  camera.add(camLight);
+  scene.add(camera);
+  orbitControls = createOrbitControls(camera);
+  orbitControls.target.copy(target);
+  updateCameraProjection();
+  render();
+  generateSVG();
+}
+
+function updateCameraProjection() {
+  if (camera instanceof PerspectiveCamera) {
+    camera.aspect = W / H;
+    camera.updateProjectionMatrix();
+  } else if (camera instanceof OrthographicCamera) {
+    const halfHeight = (camera.top - camera.bottom) / 2;
+    camera.left = -halfHeight * W / H;
+    camera.right = halfHeight * W / H;
+    camera.updateProjectionMatrix();
+  }
 }
 
 //##############################################################################
@@ -210,10 +257,10 @@ async function setupScene() {
     await loadGLTFObject(resourcesURL+params.scene+".gltf");
     break;
   case "cubes":
-    setupSceneObjects(new BoxBufferGeometry());
+    setupSceneObjects(new BoxGeometry());
     break;
   case "spheres":
-    setupSceneObjects(new SphereBufferGeometry(0.7));
+    setupSceneObjects(new SphereGeometry(0.7));
     break;
   case "cube":
   default:
@@ -244,7 +291,9 @@ async function setupScene() {
   })
 
   render();
-  params.autoRender && generateSVG();
+  if (params.autoRender) {
+    generateSVG();
+  }
 }
 
 const loader = new GLTFLoader();
@@ -417,8 +466,6 @@ function convertMaterial(mesh: Mesh) {
 
 autoRenderChanged();
 setupScene();
-params.autoRender && generateSVG();
-
-
-
-
+if (params.autoRender) {
+  generateSVG();
+}

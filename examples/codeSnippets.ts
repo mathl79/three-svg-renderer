@@ -29,7 +29,9 @@ import { SVGRenderer, FillPass, VisibleChainPass, HiddenChainPass, SVGMesh } fro
   // Gather meshes from the scene and setup SVGMesh
   const meshes = new Array<SVGMesh>();
   scene.traverse(obj => {
-    (obj as Mesh).isMesh && meshes.push(new SVGMesh(obj as Mesh));
+    if ((obj as Mesh).isMesh) {
+      meshes.push(new SVGMesh(obj as Mesh));
+    }
   });
 
   // Setup the svg renderer and add pass to it

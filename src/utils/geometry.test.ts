@@ -12,8 +12,8 @@
  * Licence: Licence.md
  */
 
-import { Line3, Vector3 } from "three";
-import { intersectLines } from "./geometry";
+import { Line3, OrthographicCamera, Vector2, Vector3 } from "three";
+import { cameraDepth, intersectLines, projectPoint } from "./geometry";
 
 describe('intersectLines intersectLines', () => {
 
@@ -89,7 +89,21 @@ describe('intersectLines intersectLines', () => {
     expect(intersectLines(a, b, target)).toBeFalsy();
   });
 
+  test('Projects points with an orthographic camera', () => {
+    const camera = new OrthographicCamera(-2, 2, 1, -1, 0.1, 10);
+    camera.position.set(0, 0, 5);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
 
+    const imagePoint = projectPoint(
+      new Vector3(1, 0, 0), new Vector2(), camera, {w: 400, h: 200}
+    );
 
+    expect(imagePoint.x).toBeCloseTo(300);
+    expect(imagePoint.y).toBeCloseTo(100);
+    expect(cameraDepth(new Vector3(0, 0, -1), camera))
+      .toBeGreaterThan(cameraDepth(new Vector3(0, 0, 0), camera));
+  });
 
-})
+});

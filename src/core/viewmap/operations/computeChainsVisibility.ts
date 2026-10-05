@@ -12,7 +12,7 @@
  * Licence: Licence.md
  */
 
-import { DoubleSide, Material, Mesh, PerspectiveCamera, Raycaster, Side, Vector3 } from "three";
+import { Camera, DoubleSide, Material, Mesh, OrthographicCamera, Raycaster, Side, Vector3 } from "three";
 import { Chain, ChainVisibility } from "../Chain";
 import { Viewmap } from "../Viewmap";
 
@@ -77,17 +77,6 @@ export function computeChainsVisibility(
 
 
 export function chainVisibilityWithGeometry(chain: Chain) {
-
-  // Search for an edge that is not obvisouly hidden by geometry
-  // (i.e. not back and not concave
-  // see paper https://hal.inria.fr/hal-02189483)
-  let i = 0;
-  let hiddenByGeometry = false;
-  do {
-    hiddenByGeometry = chain.edges[i].isConcave || chain.edges[i].isBack;
-    i += 1;
-  } while(!hiddenByGeometry && i < chain.edges.length);
-
   for (const edge of chain.edges) {
     if (edge.isConcave || edge.isBack) {
       chain.visibility = ChainVisibility.Hidden;
@@ -109,7 +98,7 @@ export function chainVisibilityWithGeometry(chain: Chain) {
  */
 export function chainVisibilityWithRaycasting(
     chain: Chain,
-    camera: PerspectiveCamera,
+    camera: Camera,
     objects: Array<Mesh>,
     tolerance = 1e-5) {
 
@@ -123,7 +112,11 @@ export function chainVisibilityWithRaycasting(
 
   // Cast a ray from the middle of the segment to the camera
   _rayOrigin.lerpVectors(edge.a.pos3d, edge.b.pos3d, 0.5);
-  _rayDirection.subVectors(camera.position, _rayOrigin).normalize();
+  if (camera instanceof OrthographicCamera) {
+    camera.getWorldDirection(_rayDirection).negate();
+  } else {
+    _rayDirection.subVectors(camera.position, _rayOrigin).normalize();
+  }
   _raycaster.firstHitOnly = false;
   _raycaster.set(_rayOrigin, _rayDirection);
 

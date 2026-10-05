@@ -47,7 +47,8 @@ const lib_cfg = {
       compilerOptions: {
         "declaration": true,
         "declarationMap": true,
-        "declarationDir": "types",
+        "declarationDir": "build/types",
+        "rootDir": "./src",
         "sourceMap": true,
       },
       exclude: ["examples/*", 'node_modules'],

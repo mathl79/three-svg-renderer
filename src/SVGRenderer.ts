@@ -10,7 +10,7 @@
 
 // LICENCE: Licence.md
 
-import {PerspectiveCamera} from 'three';
+import {Camera, OrthographicCamera, PerspectiveCamera} from 'three';
 import {
   Viewmap, ViewmapBuildInfo, ViewmapOptions,
   SVGDrawHandler, SVGDrawInfo, SVGDrawOptions, DrawPass
@@ -54,7 +54,7 @@ export class SVGRenderer {
   /**
    * Render a SVG file from the given meshes and returns it.
    * @param meshes Mehses to render
-   * @param camera Camera used to compute the perspective
+   * @param camera Camera used to project the scene
    * @param size Size of the render (will be scaled by camera aspect ratio)
    * @param options Options to customize the render
    * @param info Object containing info (e.g. times) on the rendering process
@@ -62,14 +62,20 @@ export class SVGRenderer {
    */
   async generateSVG(
       meshes: Array<SVGMesh>,
-      camera: PerspectiveCamera,
+      camera: Camera,
       size: {w: number, h: number},
       info = new SVGRenderInfo()): Promise<Svg> {
 
     const renderStartTime = Date.now();
 
-    // Setup camera keeping
-    const renderSize = {w: size.w, h: size.w/camera.aspect};
+    // Match the output dimensions to the camera frustum's aspect ratio.
+    let aspect = size.w / size.h;
+    if (camera instanceof PerspectiveCamera) {
+      aspect = camera.aspect;
+    } else if (camera instanceof OrthographicCamera) {
+      aspect = (camera.right - camera.left) / (camera.top - camera.bottom);
+    }
+    const renderSize = {w: size.w, h: size.w/aspect};
     info.resolution = renderSize;
 
     // Viewmap Build

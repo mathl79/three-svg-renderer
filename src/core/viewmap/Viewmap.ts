@@ -10,7 +10,7 @@
 
 // LICENCE: Licence.md 
 
-import { ColorRepresentation, PerspectiveCamera } from 'three';
+import { Camera, ColorRepresentation } from 'three';
 import { SizeLike } from '../../utils';
 import { SVGMesh } from '../SVGMesh';
 import { Chain, ChainVisibility } from './Chain';
@@ -46,7 +46,7 @@ export interface ViewmapOptions {
   updateMeshes?: boolean;
   ignoreVisibility?: boolean;
   defaultMeshColor?: ColorRepresentation;
-  creaseAngle: {
+  creaseAngle?: {
     min: number,
     max: number,
   }
@@ -107,7 +107,7 @@ export class Viewmap {
 
   readonly chains = new Array<Chain>();
   readonly polygons = new Array<Polygon>();
-  readonly camera = new PerspectiveCamera();
+  private _camera: Camera = new Camera();
   readonly renderSize = {w: 500, h: 500};
   readonly options: Required<ViewmapOptions> = {
     updateMeshes: true,
@@ -123,6 +123,10 @@ export class Viewmap {
     Object.assign(this.options, options);
   }
 
+  get camera() {
+    return this._camera;
+  }
+
   clear() {
     this.meshes.clear();
     this.viewEdges.clear();
@@ -134,7 +138,7 @@ export class Viewmap {
 
   build(
       meshes: SVGMesh[],
-      camera: PerspectiveCamera,
+      camera: Camera,
       renderSize: SizeLike,
       info = new ViewmapBuildInfo(),
       progressCallback?: (progress: ProgressInfo) => void) {
@@ -143,8 +147,15 @@ export class Viewmap {
 
     this.meshes.push(...meshes);
 
-    this.camera.copy(camera);
-    this.camera.getWorldPosition(camera.position);
+    camera.updateWorldMatrix(true, false);
+    this._camera = camera.clone();
+    camera.matrixWorld.decompose(
+      this._camera.position,
+      this._camera.quaternion,
+      this._camera.scale
+    );
+    this._camera.matrixAutoUpdate = true;
+    this.camera.updateMatrixWorld(true);
     
     this.renderSize.w = renderSize.w;
     this.renderSize.h = renderSize.h;
@@ -169,11 +180,13 @@ export class Viewmap {
     return new Promise<void>((resolve) => {
 
       if (idx < actions.length) {
-        progressCallback && progressCallback({
-          totalSteps: actions.length,
-          currentStep: idx+1,
-          currentStepName: actions[idx].name
-        });
+        if (progressCallback) {
+          progressCallback({
+            totalSteps: actions.length,
+            currentStep: idx+1,
+            currentStepName: actions[idx].name
+          });
+        }
 
         console.info(`Viewmap step ${idx+1}/${actions.length} : ${actions[idx].name}`);
         actions[idx].process().then(() => {

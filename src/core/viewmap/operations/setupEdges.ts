@@ -12,11 +12,11 @@
  * Licence: Licence.md
  */
 
-import { Halfedge } from "three-mesh-halfedge";
+import { Face, Halfedge } from "three-mesh-halfedge";
 import { frontSide } from "../../../utils";
 import { ViewEdge, ViewEdgeNature } from "../ViewEdge";
 import { Viewmap } from "../Viewmap";
-import { PerspectiveCamera, Vector3 } from "three";
+import { Camera, OrthographicCamera, Vector3 } from "three";
 import { createViewVertex } from "./createViewVertex";
 
 export interface ViewEdgeNatureOptions {
@@ -97,7 +97,7 @@ export function setupEdges(
 }
 export function propsForViewEdge(
     halfedge: Halfedge,
-    camera: PerspectiveCamera,
+    camera: Camera,
     options?: ViewEdgeNatureOptions) {
 
   const props = {
@@ -117,8 +117,8 @@ export function propsForViewEdge(
     props.nature = ViewEdgeNature.Boundary;
     return props;
   } else {
-    const faceAFront = halfedge.face.isFront(camera.position);
-    const faceBFront = halfedge.twin.face.isFront(camera.position);
+    const faceAFront = isFaceFront(halfedge.face, camera);
+    const faceBFront = isFaceFront(halfedge.twin.face, camera);
 
     // If edge is between two back faces, then it is a back edge
     props.isBack = !faceAFront && !faceBFront;
@@ -149,4 +149,13 @@ export function propsForViewEdge(
   }
 
   return null;
+}
+
+function isFaceFront(face: Face, camera: Camera) {
+  if (camera instanceof OrthographicCamera) {
+    face.getNormal(_u);
+    camera.getWorldDirection(_v);
+    return _u.dot(_v) <= 0;
+  }
+  return face.isFront(camera.position);
 }
