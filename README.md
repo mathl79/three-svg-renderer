@@ -12,6 +12,7 @@ An **experimental** three.js SVG renderer written in Typescript to render 3D sce
 ## Demo
 
 - [SVG Renderer Demo](https://lokiresearch.github.io/three-svg-renderer/build-examples/RendererDemo.html)
+- [SVG Renderer Demo](https://github.com/mathl79/three-svg-renderer/blob/main/examples/RendererDemo.html)
     
 - [PNG/SVG Textures Demo](https://lokiresearch.github.io/three-svg-renderer/build-examples/TextureDemo.html)
 
