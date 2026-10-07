@@ -9,68 +9,76 @@
 
 // LICENCE: Licence.md
 
-import { Vector3 } from 'three';
+import {
+  Camera, DoubleSide, Material, OrthographicCamera, Raycaster, Side, Vector2, Vector3
+} from 'three';
 import { Svg, G as SVGGroup } from '@svgdotjs/svg.js';
+import { Face, Halfedge, Vertex } from 'three-mesh-halfedge';
 import { Viewmap } from '../../viewmap/Viewmap';
-import { Chain, ChainVisibility } from '../../viewmap/Chain';
-import { ViewEdge, ViewEdgeNature } from '../../viewmap/ViewEdge';
-import { ViewVertex } from '../../viewmap/ViewVertex';
+import { ViewEdgeNature } from '../../viewmap/ViewEdge';
+import { SVGMesh } from '../../SVGMesh';
 import { getSVGPath } from '../svgutils';
-import { ChainPass, ChainPassOptions, StrokeStyle } from './ChainPass';
+import { ChainPass, ChainPassOptions } from './ChainPass';
 import { mergeOptions } from '../../../utils/objects';
+import { projectPoint } from '../../../utils';
 
 export type BlendVisibilityFilter = 'visible' | 'hidden' | 'all';
 
 export interface BlendTangentChainPassOptions extends ChainPassOptions {
   /**
-   * Which chain visibilities to process.
+   * Which blend line visibilities to draw.
    * @defaultValue 'visible'
    */
   visibilityFilter?: BlendVisibilityFilter;
 
   /**
-   * Edge natures to consider for blend detection.
-   * @defaultValue [Silhouette, Crease]
+   * Dihedral angle (degrees) above which an edge is a sharp feature edge.
+   * Sharp edges are neither blend candidates nor used in curvature estimation,
+   * so curvature never leaks across real creases. Must be larger than the
+   * chord step of the coarsest fillet tessellation.
+   * @defaultValue 40
    */
-  targetNatures?: ViewEdgeNature[];
+  sharpAngle?: number;
 
   /**
-   * Minimum curvature magnitude (radians per world-space unit) for an edge to
-   * qualify. Edges below this are essentially flat and excluded.
-   * @defaultValue 0.05
+   * Dihedral angle (degrees) below which adjacent faces are merged into one
+   * planar facet before curvature estimation (e.g. the two triangles of a
+   * tessellation quad).
+   * @defaultValue 0.5
    */
-  minCurvatureMagnitude?: number;
+  coplanarAngle?: number;
 
   /**
-   * Minimum cos(angle) between consecutive curvature axes to continue a run.
-   * Uses absolute value so sign of the cross-product does not matter.
-   * 1 = perfectly aligned, 0 = orthogonal.
-   * @defaultValue 0.85
+   * Minimum cosine between consecutive edge directions when linking blend
+   * edges into chains at junction vertices (straightest continuation wins).
+   * @defaultValue 0.7
    */
-  axisAlignmentThreshold?: number;
+  continuationCos?: number;
 
   /**
-   * Maximum absolute difference in anisotropy between consecutive edges in
-   * the same run.
-   * @defaultValue 0.2
+   * Minimum relative curvature jump across an edge for it to be a blend
+   * transition line: `|T_A - T_B| / max(|T_A|, |T_B|)` where `T` are the
+   * per-face discrete curvature tensors. 0 = any change, 1 = one side flat.
+   * Captures radius changes (plane→fillet, cylinder→fillet) as well as
+   * curvature axis changes (cylinder→torus, cylinder→sphere).
+   * @defaultValue 0.45
    */
-  anisotropyDeviationTolerance?: number;
+  curvatureJump?: number;
 
   /**
-   * Minimum anisotropy scalar to include an edge. Edges whose curvature axis
-   * points equally toward all three world axes (isotropic in global frame) are
-   * excluded. Set to 0 to disable the anisotropy filter entirely and rely only
-   * on axis alignment.
-   * @defaultValue 0.1
-   */
-  minAnisotropy?: number;
-
-  /**
-   * Minimum number of edges a sub-chain must contain before it is rendered.
-   * Suppresses isolated single-edge detections.
+   * Minimum curvature of the more curved side, relative to the mesh size
+   * (curvature × bounding box diagonal). Suppresses transitions between
+   * nearly flat regions caused by tessellation noise.
+   * Value 2 ≈ radius smaller than half the bounding box diagonal.
    * @defaultValue 2
    */
-  minSubChainLength?: number;
+  minRelativeCurvature?: number;
+
+  /**
+   * Minimum number of mesh edges a blend chain must contain.
+   * @defaultValue 3
+   */
+  minChainLength?: number;
 
   /**
    * SVG group id written into the output.
@@ -79,100 +87,296 @@ export interface BlendTangentChainPassOptions extends ChainPassOptions {
   groupId?: string;
 }
 
-interface EdgeSignature {
-  /** Unit curvature axis in world space (axis around which the surface bends). */
-  axis: Vector3;
-  /** Bending per unit length (rad / world-unit). */
-  magnitude: number;
-  /**
-   * How unequally the curvature axis projects onto world X/Y/Z.
-   * max(|ax|,|ay|,|az|) - min(|ax|,|ay|,|az|) ∈ [0, 1].
-   * 0 = perfectly diagonal (isotropic in global frame), 1 = aligned with one
-   * world axis (e.g. a cylinder whose axis runs along world Y).
-   */
-  anisotropy: number;
+/** Symmetric 3x3 tensor stored as [xx, yy, zz, xy, xz, yz] */
+type Tensor = Float64Array;
+
+export interface BlendEdge {
+  he: Halfedge;
+  /** Relative curvature jump across the edge */
+  score: number;
 }
 
+const _a = new Vector3();
+const _b = new Vector3();
+const _c = new Vector3();
+const _n = new Vector3();
 const _nA = new Vector3();
 const _nB = new Vector3();
-const _axis = new Vector3();
+const _d = new Vector3();
 
-function computeEdgeSignature(edge: ViewEdge): EdgeSignature | null {
-  const he = edge.halfedge;
-  if (!he || !he.face || !he.twin.face) return null;
-  if (!isFinite(edge.faceAngle) || edge.faceAngle === 0) return null;
-
-  const edgeLength = edge.a.pos3d.distanceTo(edge.b.pos3d);
-  if (edgeLength < 1e-9) return null;
-
-  he.face.getNormal(_nA);
-  he.twin.face.getNormal(_nB);
-
-  _axis.crossVectors(_nA, _nB);
-  const axisLen = _axis.length();
-  if (axisLen < 1e-9) return null;
-  _axis.divideScalar(axisLen);
-
-  const magnitude = (edge.faceAngle * Math.PI / 180) / edgeLength;
-
-  const px = Math.abs(_axis.x);
-  const py = Math.abs(_axis.y);
-  const pz = Math.abs(_axis.z);
-  const anisotropy = Math.max(px, py, pz) - Math.min(px, py, pz);
-
-  return { axis: _axis.clone(), magnitude, anisotropy };
+function tensorNorm(t: Tensor, o = 0, u?: Tensor, uo = 0) {
+  let s = 0;
+  for (let i = 0; i < 6; i++) {
+    const x = u ? t[o + i] - u[uo + i] : t[o + i];
+    // Off-diagonal terms count twice in the Frobenius norm
+    s += (i < 3 ? 1 : 2) * x * x;
+  }
+  return Math.sqrt(s);
 }
 
-function groupToSubChains(
-    chain: Chain,
-    opts: Required<BlendTangentChainPassOptions>
-): ViewVertex[][] {
+/**
+ * Signed dihedral angle (radians) of the edge carried by `he`, positive for
+ * convex edges. Returns NaN for boundary edges.
+ */
+function signedDihedral(he: Halfedge): number {
+  if (!he.face || !he.twin.face) return NaN;
+  he.face.getNormal(_nA);
+  he.twin.face.getNormal(_nB);
+  const angle = Math.acos(Math.max(-1, Math.min(1, _nA.dot(_nB))));
+  _d.subVectors(he.next.vertex.position, he.vertex.position);
+  return _n.crossVectors(_nA, _nB).dot(_d) >= 0 ? angle : -angle;
+}
 
-  const sigs = chain.edges.map(computeEdgeSignature);
-  const subChains: ViewVertex[][] = [];
-  let current: ViewVertex[] | null = null;
+/**
+ * Detects blend transition edges of a mesh by searching curvature
+ * discontinuities across tangent-continuous edges.
+ *
+ * Each face receives the discrete curvature tensor of Cohen-Steiner & Morvan
+ * restricted to the face: `T_f = 1/A_f Σ_e ½ β_e |e| ê êᵀ` over its smooth
+ * edges (β_e signed dihedral). The tensor is orientation independent and
+ * encodes both magnitude and axis of the bending, so planes (T=0), cylinders
+ * (rank 1), tori and spheres (rank 2) are distinguished implicitly without
+ * explicit primitive fitting. On chord tessellated CAD surfaces the dihedral
+ * at a fillet boundary is only half a fillet step, while inside the fillet it
+ * is a full step, so the tensor jumps across the tangent line and stays
+ * constant inside a primitive.
+ *
+ * An edge is a blend edge when it is smooth (β < sharpAngle) and the tensors
+ * of its two faces differ by more than `curvatureJump`. The edge's own
+ * contribution is shared by both faces, so a lone tessellation fold inside a
+ * flat region produces no jump.
+ */
+export function detectBlendEdges(
+    mesh: Pick<SVGMesh, 'hes'>,
+    options: Pick<Required<BlendTangentChainPassOptions>,
+      'sharpAngle' | 'coplanarAngle' | 'curvatureJump' | 'minRelativeCurvature'>
+): BlendEdge[] {
 
-  for (let i = 0; i < chain.edges.length; i++) {
-    const sig = sigs[i];
+  const {faces, halfedges, vertices} = mesh.hes;
+  const sharp = options.sharpAngle * Math.PI / 180;
 
-    const qualifies =
-      sig !== null &&
-      sig.magnitude >= opts.minCurvatureMagnitude &&
-      sig.anisotropy >= opts.minAnisotropy;
+  const coplanar = options.coplanarAngle * Math.PI / 180;
 
-    let continues = false;
-    if (qualifies && current !== null && i > 0) {
-      const prevSig = sigs[i - 1];
-      if (prevSig !== null) {
-        // Abs dot product is sign-agnostic: cross-product axes may flip direction.
-        const axisDot = Math.abs(sig.axis.dot(prevSig.axis));
-        const anisoDiff = Math.abs(sig.anisotropy - prevSig.anisotropy);
-        continues =
-          axisDot >= opts.axisAlignmentThreshold &&
-          anisoDiff < opts.anisotropyDeviationTolerance;
-      }
+  const faceIndex = new Map<Face, number>();
+  faces.forEach((f, i) => faceIndex.set(f, i));
+
+  // Union-find of coplanar faces: triangulated quads and planar n-gons
+  // become one patch, so a tensor describes a whole facet of the
+  // tessellation instead of a single (arbitrarily split) triangle.
+  const parent = new Int32Array(faces.length).map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
     }
+    return i;
+  };
 
-    if (qualifies && continues) {
-      current!.push(chain.vertices[i + 1]);
-    } else if (qualifies) {
-      if (current !== null && current.length - 1 >= opts.minSubChainLength) {
-        subChains.push(current);
-      }
-      current = [chain.vertices[i], chain.vertices[i + 1]];
-    } else {
-      if (current !== null && current.length - 1 >= opts.minSubChainLength) {
-        subChains.push(current);
-      }
-      current = null;
+  const edges = new Array<{he: Halfedge, beta: number}>();
+  const handled = new Set<Halfedge>();
+  for (const he of halfedges) {
+    if (handled.has(he.twin)) continue;
+    handled.add(he);
+    const beta = signedDihedral(he);
+    if (!isFinite(beta)) continue;
+    edges.push({he, beta});
+    if (Math.abs(beta) < coplanar) {
+      const fa = find(faceIndex.get(he.face as Face) as number);
+      const fb = find(faceIndex.get(he.twin.face as Face) as number);
+      parent[fa] = fb;
     }
   }
 
-  if (current !== null && current.length - 1 >= opts.minSubChainLength) {
-    subChains.push(current);
+  const patch = (face: Face | null) => find(faceIndex.get(face as Face) as number);
+
+  const areas = new Float64Array(faces.length);
+  for (let i = 0; i < faces.length; i++) {
+    const he = faces[i].halfedge;
+    _a.copy(he.prev.vertex.position);
+    _b.subVectors(he.vertex.position, _a);
+    _c.subVectors(he.next.vertex.position, _a);
+    areas[find(i)] += 0.5 * _n.crossVectors(_b, _c).length();
   }
 
-  return subChains;
+  const tensors = new Float64Array(faces.length * 6);
+  const smoothEdges = new Array<Halfedge>();
+
+  for (const {he, beta} of edges) {
+    if (Math.abs(beta) >= sharp) continue;
+    const pa = patch(he.face);
+    const pb = patch(he.twin.face);
+    if (pa === pb) continue;
+    smoothEdges.push(he);
+
+    _d.subVectors(he.next.vertex.position, he.vertex.position);
+    const len = _d.length();
+    if (len < 1e-12) continue;
+    _d.divideScalar(len);
+
+    const w = 0.5 * beta * len;
+    const contrib = [_d.x*_d.x, _d.y*_d.y, _d.z*_d.z, _d.x*_d.y, _d.x*_d.z, _d.y*_d.z];
+
+    for (const pi of [pa, pb]) {
+      const area = areas[pi];
+      if (area < 1e-16) continue;
+      for (let k = 0; k < 6; k++) {
+        tensors[pi * 6 + k] += w * contrib[k] / area;
+      }
+    }
+  }
+
+  // Mesh scale for the relative curvature threshold
+  const min = new Vector3(Infinity, Infinity, Infinity);
+  const max = new Vector3(-Infinity, -Infinity, -Infinity);
+  for (const v of vertices) {
+    min.min(v.position);
+    max.max(v.position);
+  }
+  const diagonal = Math.max(min.distanceTo(max), 1e-12);
+  const minCurvature = options.minRelativeCurvature / diagonal;
+
+  const blendEdges = new Array<BlendEdge>();
+  for (const he of smoothEdges) {
+    const fa = patch(he.face);
+    const fb = patch(he.twin.face);
+    const na = tensorNorm(tensors, fa * 6);
+    const nb = tensorNorm(tensors, fb * 6);
+    const nmax = Math.max(na, nb);
+    if (nmax < minCurvature) continue;
+    const jump = tensorNorm(tensors, fa * 6, tensors, fb * 6) / nmax;
+    if (jump >= options.curvatureJump) {
+      blendEdges.push({he, score: jump});
+    }
+  }
+
+  return blendEdges;
+}
+
+interface BlendChain {
+  vertices: Vertex[];
+  edges: Halfedge[];
+  closed: boolean;
+}
+
+/**
+ * Links blend edges into polylines. At vertices joining more than two blend
+ * edges, the walk continues along the straightest edge (cosine above
+ * `minCos`) so that crossing tangent lines stay separate chains. Walks start
+ * at end points, then at the highest scored remaining edges (closed loops).
+ */
+export function linkBlendEdges(edges: BlendEdge[], minCos: number): BlendChain[] {
+  const adjacency = new Map<Vertex, Halfedge[]>();
+  const add = (v: Vertex, he: Halfedge) => {
+    let list = adjacency.get(v);
+    if (!list) adjacency.set(v, list = []);
+    list.push(he);
+  };
+  for (const {he} of edges) {
+    add(he.vertex, he);
+    add(he.twin.vertex, he);
+  }
+
+  const used = new Set<Halfedge>();
+  const chains = new Array<BlendChain>();
+  const other = (he: Halfedge, v: Vertex) =>
+    he.vertex === v ? he.twin.vertex : he.vertex;
+  const direction = (he: Halfedge, from: Vertex, target: Vector3) =>
+    target.subVectors(other(he, from).position, from.position).normalize();
+
+  const _in = new Vector3();
+  const _out = new Vector3();
+
+  const walk = (start: Vertex, first: Halfedge) => {
+    const chain: BlendChain = {vertices: [start], edges: [], closed: false};
+    let v = start;
+    let he: Halfedge | undefined = first;
+    while (he && !used.has(he)) {
+      used.add(he);
+      chain.edges.push(he);
+      direction(he, v, _in);
+      v = other(he, v);
+      chain.vertices.push(v);
+      if (v === start) {
+        chain.closed = true;
+        break;
+      }
+      let best: Halfedge | undefined;
+      let bestCos = minCos;
+      for (const next of adjacency.get(v) as Halfedge[]) {
+        if (used.has(next)) continue;
+        const cos = _in.dot(direction(next, v, _out));
+        if (cos > bestCos) {
+          bestCos = cos;
+          best = next;
+        }
+      }
+      he = best;
+    }
+    chains.push(chain);
+  };
+
+  for (const [v, list] of adjacency) {
+    if (list.length === 1 && !used.has(list[0])) walk(v, list[0]);
+  }
+  const remaining = edges.filter(e => !used.has(e.he))
+    .sort((e1, e2) => e2.score - e1.score);
+  for (const {he} of remaining) {
+    if (!used.has(he)) walk(he.vertex, he);
+  }
+
+  return chains;
+}
+
+const _raycaster = new Raycaster();
+const _origin = new Vector3();
+const _dir = new Vector3();
+const _faceNormal = new Vector3();
+
+function isFrontFace(face: Face, camera: Camera) {
+  face.getNormal(_faceNormal);
+  if (camera instanceof OrthographicCamera) {
+    camera.getWorldDirection(_dir);
+    return _faceNormal.dot(_dir) <= 0;
+  }
+  return face.isFront(camera.position);
+}
+
+function isEdgeVisible(
+    he: Halfedge,
+    viewmap: Viewmap,
+    epsilon: number): boolean {
+
+  const camera = viewmap.camera;
+  const frontA = he.face ? isFrontFace(he.face, camera) : false;
+  const frontB = he.twin.face ? isFrontFace(he.twin.face, camera) : false;
+  if (!frontA && !frontB) return false;
+
+  _origin.lerpVectors(he.vertex.position, he.twin.vertex.position, 0.5);
+  if (camera instanceof OrthographicCamera) {
+    camera.getWorldDirection(_dir).negate();
+  } else {
+    _dir.subVectors(camera.position, _origin).normalize();
+  }
+  // Start slightly off the surface towards the camera to skip own faces
+  _origin.addScaledVector(_dir, epsilon);
+  _raycaster.set(_origin, _dir);
+  _raycaster.firstHitOnly = true;
+
+  const hits = _raycaster.intersectObjects(
+    viewmap.meshes.map(m => m.threeMesh), false);
+  return !hits.some(h => h.distance > epsilon);
+}
+
+function setDoubleSide(meshes: SVGMesh[]) {
+  const sides = new Map<Material, Side>();
+  for (const mesh of meshes) {
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const material of materials) {
+      sides.set(material, material.side);
+      material.side = DoubleSide;
+    }
+  }
+  return () => sides.forEach((side, material) => material.side = side);
 }
 
 const DEFAULT_BLEND_OPTIONS: Required<BlendTangentChainPassOptions> = {
@@ -198,24 +402,23 @@ const DEFAULT_BLEND_OPTIONS: Required<BlendTangentChainPassOptions> = {
   },
   // BlendTangentChainPass-specific defaults
   visibilityFilter: 'visible',
-  targetNatures: [ViewEdgeNature.Silhouette, ViewEdgeNature.Crease],
-  minCurvatureMagnitude: 0.05,
-  axisAlignmentThreshold: 0.85,
-  anisotropyDeviationTolerance: 0.2,
-  minAnisotropy: 0.1,
-  minSubChainLength: 2,
+  sharpAngle: 40,
+  coplanarAngle: 0.5,
+  continuationCos: 0.7,
+  curvatureJump: 0.45,
+  minRelativeCurvature: 2,
+  minChainLength: 3,
   groupId: 'blend-tangents',
 };
 
 /**
- * Chain pass that detects tangential edges of blend/fillet surfaces by
- * grouping consecutive edges whose curvature axes (the world-space axis around
- * which the surface bends) are similar in direction and anisotropy.
+ * Draw pass rendering the tangent transition lines of blend/fillet surfaces
+ * (edges where the surface stays tangent continuous but its curvature jumps,
+ * e.g. plane→fillet, cylinder→torus).
  *
- * Edges on flat surfaces (low curvature magnitude) and on fully isotropic
- * surfaces (curvature axis pointing equally toward all world axes) are
- * filtered out, leaving the characteristic transition lines of oriented
- * blend/round features.
+ * Detection runs directly on the mesh halfedge structure, so it neither
+ * depends on the mesh orientation nor on the viewmap crease angle settings.
+ * Visibility is computed per edge with raycasting.
  */
 export class BlendTangentChainPass extends ChainPass {
 
@@ -230,18 +433,9 @@ export class BlendTangentChainPass extends ChainPass {
 
   async draw(svg: Svg, viewmap: Viewmap): Promise<void> {
     const opts = this.blendOptions;
-    const { visibilityFilter, targetNatures, styles, defaultStyle } = opts;
+    const { visibilityFilter, defaultStyle } = opts;
 
-    const targetNatureSet = new Set(targetNatures);
-
-    const chains = viewmap.chains.filter(c => {
-      if (!targetNatureSet.has(c.nature)) return false;
-      if (visibilityFilter === 'visible') return c.visibility === ChainVisibility.Visible;
-      if (visibilityFilter === 'hidden')  return c.visibility === ChainVisibility.Hidden;
-      return true;
-    });
-
-    const meshes = Array.from(viewmap.meshes).filter(m =>
+    const meshes = viewmap.meshes.filter(m =>
       (visibilityFilter !== 'hidden'  && m.drawVisibleContours) ||
       (visibilityFilter !== 'visible' && m.drawHiddenContours)
     );
@@ -249,29 +443,80 @@ export class BlendTangentChainPass extends ChainPass {
     const rootGroup = new SVGGroup({ id: opts.groupId });
     svg.add(rootGroup);
 
-    for (const mesh of meshes) {
-      const meshChains = chains.filter(c => c.object === mesh);
-      if (meshChains.length === 0) continue;
+    const restoreSides = setDoubleSide(viewmap.meshes);
 
-      const meshGroup = new SVGGroup({ id: mesh.name });
-      rootGroup.add(meshGroup);
+    try {
+      for (const mesh of meshes) {
+        const blendEdges = detectBlendEdges(mesh, opts);
+        const chains = linkBlendEdges(blendEdges, opts.continuationCos)
+          .filter(c => c.edges.length >= opts.minChainLength);
+        if (chains.length === 0) continue;
 
-      for (const chain of meshChains) {
-        const natureStyle = styles[chain.nature];
-        if (!natureStyle?.enabled) continue;
+        const meshGroup = new SVGGroup({ id: mesh.name });
+        rootGroup.add(meshGroup);
 
-        const strokeStyle: StrokeStyle = { ...defaultStyle, ...natureStyle };
+        mesh.threeMesh.geometry.computeBoundingSphere();
+        const radius = mesh.threeMesh.geometry.boundingSphere?.radius ?? 1;
+        const epsilon = 1e-4 * radius * mesh.matrixWorld.getMaxScaleOnAxis();
 
-        const subChains = groupToSubChains(chain, opts);
-        for (const vertices of subChains) {
-          const style = opts.useRandomColors
-            ? { ...strokeStyle, color: '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0') }
-            : { ...strokeStyle };
+        for (const chain of chains) {
+          for (const run of this.splitByVisibility(chain, viewmap, epsilon)) {
+            const points = run.vertices.map(v => projectPoint(
+              v.position, new Vector2(), viewmap.camera, viewmap.renderSize));
 
-          const path = getSVGPath(vertices, [], false, style);
-          meshGroup.add(path);
+            const style = opts.useRandomColors
+              ? { ...defaultStyle, color: '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0') }
+              : { ...defaultStyle };
+
+            meshGroup.add(getSVGPath(points, [], run.closed, style));
+          }
         }
       }
+    } finally {
+      restoreSides();
     }
+  }
+
+  /**
+   * Splits a chain into runs of edges matching the visibility filter.
+   */
+  private splitByVisibility(
+      chain: BlendChain,
+      viewmap: Viewmap,
+      epsilon: number): BlendChain[] {
+
+    const filter = this.blendOptions.visibilityFilter;
+    const keep = chain.edges.map(he => {
+      if (filter === 'all' || viewmap.options.ignoreVisibility) return true;
+      const visible = isEdgeVisible(he, viewmap, epsilon);
+      return filter === 'visible' ? visible : !visible;
+    });
+
+    if (keep.every(k => k)) return [chain];
+
+    // Rotate closed loops so that runs are not cut at the loop seam
+    let offset = 0;
+    const n = chain.edges.length;
+    if (chain.closed) {
+      offset = keep.indexOf(false) + 1;
+    }
+
+    const runs = new Array<BlendChain>();
+    let current: BlendChain | null = null;
+    for (let k = 0; k < n; k++) {
+      const i = (k + offset) % n;
+      if (keep[i]) {
+        if (!current) {
+          current = {vertices: [chain.vertices[i]], edges: [], closed: false};
+        }
+        current.edges.push(chain.edges[i]);
+        current.vertices.push(chain.vertices[i + 1]);
+      } else if (current) {
+        runs.push(current);
+        current = null;
+      }
+    }
+    if (current) runs.push(current);
+    return runs;
   }
 }

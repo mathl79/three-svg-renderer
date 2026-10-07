@@ -1,10 +1,11 @@
 import {GUI} from 'dat.gui';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import * as THREE from 'three';
-import { FillPass, HiddenChainPass, SingularityPointPass, SVGMesh, 
-  SVGRenderer, VisibleChainPass, SVGRenderInfo} from '../src/index';
+import { FillPass, HiddenChainPass, SingularityPointPass, SVGMesh,
+  SVGRenderer, VisibleChainPass, SVGRenderInfo, BlendTangentChainPass} from '../src/index';
 import { BoxGeometry, BufferGeometry, Camera, Mesh, MeshBasicMaterial, MeshPhongMaterial, MeshStandardMaterial, OrthographicCamera, PerspectiveCamera, SphereGeometry, Vector3 } from 'three';
 import {GLTFLoader} from 'three/examples/jsm/loaders/GLTFLoader.js';
+import {OBJLoader} from 'three/examples/jsm/loaders/OBJLoader.js';
 import {debounce} from 'throttle-debounce';
 import { Svg } from '@svgdotjs/svg.js';
 
@@ -22,6 +23,7 @@ const possibleObjects = {
   "cubes": "cubes",
   "spheres": "spheres",
   "torusknot": "torusknot",
+  "ringcore": "ringcore",
 }
 
 let svg: Svg | null = null;
@@ -34,9 +36,14 @@ const hiddenChainPass = new HiddenChainPass();
 hiddenChainPass.enabled = false;
 const singularityPass = new SingularityPointPass();
 singularityPass.enabled = false;
+const blendTangentPass = new BlendTangentChainPass({
+  defaultStyle: { color: '#ff6600', width: 1.5 },
+});
+blendTangentPass.enabled = false;
 svgRenderer.addPass(fillPass);
 svgRenderer.addPass(visibleChainPass);
 svgRenderer.addPass(hiddenChainPass);
+svgRenderer.addPass(blendTangentPass);
 svgRenderer.addPass(singularityPass);
 
 const params = {
@@ -140,6 +147,42 @@ sing_gui.add(singularityPass.options, "drawLegend").onChange(paramChanged);
 sing_gui.add(singularityPass.options, "pointSize", 0, 20, 0.5).onChange(paramChanged);
 sing_gui.add(singularityPass.options, "drawVisiblePoints").onChange(paramChanged);
 sing_gui.add(singularityPass.options, "drawHiddenPoints").onChange(paramChanged);
+
+/**
+ * Blend Tangent Pass
+ */
+const blend_gui = gui.addFolder("Blend Tangent Pass");
+blend_gui.add(blendTangentPass, 'enabled').onChange(paramChanged);
+blend_gui.add(blendTangentPass.blendOptions, 'curvatureJump', 0, 1, 0.01).onChange(paramChanged);
+blend_gui.add(blendTangentPass.blendOptions, 'minRelativeCurvature', 0, 20, 0.1).onChange(paramChanged);
+blend_gui.add(blendTangentPass.blendOptions, 'sharpAngle', 1, 89, 1).name('sharpAngle°').onChange(paramChanged);
+blend_gui.add(blendTangentPass.blendOptions, 'coplanarAngle', 0, 5, 0.05).name('coplanarAngle°').onChange(paramChanged);
+blend_gui.add(blendTangentPass.blendOptions, 'continuationCos', 0, 1, 0.01).onChange(paramChanged);
+blend_gui.add(blendTangentPass.blendOptions, 'minChainLength', 1, 50, 1).onChange(paramChanged);
+blend_gui.add(blendTangentPass.blendOptions, 'visibilityFilter', ['visible', 'hidden', 'all']).onChange(paramChanged);
+blend_gui.addColor(blendTangentPass.blendOptions.defaultStyle, 'color').onChange(paramChanged);
+blend_gui.add(blendTangentPass.blendOptions.defaultStyle, 'width', 0.1, 5, 0.1).onChange(paramChanged);
+blend_gui.add(blendTangentPass.blendOptions, 'useRandomColors').onChange(paramChanged);
+
+const creaseAngleParams = {
+  creaseMin: 80,
+  creaseMax: 100,
+};
+const crease_gui = blend_gui.addFolder("Viewmap Crease Angle");
+crease_gui.add(creaseAngleParams, 'creaseMin', 0, 179, 0.5).name('min°').onChange(() => {
+  svgRenderer.viewmap.options.creaseAngle = {
+    min: creaseAngleParams.creaseMin,
+    max: creaseAngleParams.creaseMax,
+  };
+  paramChanged();
+});
+crease_gui.add(creaseAngleParams, 'creaseMax', 0, 179, 0.5).name('max°').onChange(() => {
+  svgRenderer.viewmap.options.creaseAngle = {
+    min: creaseAngleParams.creaseMin,
+    max: creaseAngleParams.creaseMax,
+  };
+  paramChanged();
+});
 
 /**
  * Options
@@ -248,6 +291,11 @@ async function setupScene() {
   scene.add(ambientLight)
   scene.add(camera);
 
+  // Reset crease angle to defaults for all scenes; ringcore overrides below
+  creaseAngleParams.creaseMin = 80;
+  creaseAngleParams.creaseMax = 100;
+  svgRenderer.viewmap.options.creaseAngle = { min: 80, max: 100 };
+
   switch (params.scene) {
   case "torusknot":
     scene.add(new Mesh(new THREE.TorusKnotGeometry(), meshMaterial));
@@ -261,6 +309,13 @@ async function setupScene() {
     break;
   case "spheres":
     setupSceneObjects(new SphereGeometry(0.7));
+    break;
+  case "ringcore":
+    await loadOBJObject('ringcore.obj');
+    // Blend tangent lines are detected from the mesh curvature directly,
+    // no viewmap crease angle tuning required.
+    blendTangentPass.enabled = true;
+    gui.updateDisplay();
     break;
   case "cube":
   default:
@@ -306,6 +361,31 @@ function loadGLTFObject(url: string) {
   });
 }
 
+const objLoader = new OBJLoader();
+function loadOBJObject(filename: string) {
+  const url = new URL('../examples/' + filename, window.location.href).href;
+  
+  return new Promise<void>((resolve) => {
+    objLoader.load(url, function (group) {
+      group.traverse(child => {
+        if ((child as Mesh).isMesh) {
+          (child as Mesh).material = meshMaterial;
+        }
+      });
+      // Scale to fit roughly in a 10-unit box
+      const box = new THREE.Box3().setFromObject(group);
+      const size = box.getSize(new Vector3()).length();
+      const scale = 10 / size;
+      group.scale.setScalar(scale);
+      box.setFromObject(group);
+      const center = box.getCenter(new Vector3());
+      group.position.sub(center);
+      scene.add(group);
+      resolve();
+    });
+  });
+}
+
 function render() {
   gui.updateDisplay();
   updateInfo();
@@ -333,6 +413,13 @@ const debouncedGenerateSVG = debounce(500, () => {
       newSvg.addTo(svgDomElement);
       console.info(info);
       updateInfo(info.renderingTime);
+    }
+
+    // Blend tangent diagnostics
+    if (blendTangentPass.enabled) {
+      const blendGroup = newSvg.findOne('#blend-tangents');
+      const blendPaths = blendGroup ? blendGroup.find('path').length : 0;
+      console.log('[BlendTangentPass] blend chains rendered:', blendPaths);
     }
   });
 });
